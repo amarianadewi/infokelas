@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Students
+    match /students/{studentId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    // Attendance
+    match /attendance/{date} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    // Leave Requests (Izin Online)
+    match /leave_requests/{requestId} {
+      allow read: if true;
+      allow create: if true;
+      allow update, delete: if request.auth != null;
+    }
+    
+    // Announcements (PR, Jadwal, Libur, Info)
+    match /announcements/{announcementId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    // Activities (Kegiatan & Foto)
+    match /activities/{activityId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    // Dismissal Settings (Jam Pulang & Ekstra)
+    match /dismissal_settings/{settingId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    // Fees & Payments (Iuran & Status Pembayaran)
+    match /fees/{feeId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    match /payments/{paymentId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+  }
+}
