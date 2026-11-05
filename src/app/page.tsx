@@ -6,63 +6,73 @@ import Footer from "@/components/Footer";
 import ParentView from "@/components/ParentView";
 import TeacherView from "@/components/TeacherView";
 import { Student } from "@/types";
-import { getStudents, hashPin, verifyAdminPin } from "@/lib/dataService";
+import { getStudents, hashPin } from "@/lib/dataService";
 import { auth } from "@/lib/firebase";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged, User } from "firebase/auth";
 
 export default function Home() {
   const [currentUser, setCurrentUser] = useState<Student | null>(null);
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [isTeacher, setIsTeacher] = useState(false);
   const [pinInput, setPinInput] = useState("");
   const [nisnInput, setNisnInput] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
-  // Mode login: PIN (default lama) vs Guru Email (Firebase Auth)
-  const [loginMode, setLoginMode] = useState<"pin" | "guru_email">("pin");
-  const [guruEmail, setGuruEmail] = useState("");
+  // Tab Login: "pin" (Wali Murid) vs "guru" (Wali Kelas Firebase Auth)
+  const [loginMode, setLoginMode] = useState<"pin" | "guru">("pin");
+  const [guruEmail, setGuruEmail] = useState("amarianadewi@gmail.com");
   const [guruPassword, setGuruPassword] = useState("");
   const [isLoggingInEmail, setIsLoggingInEmail] = useState(false);
 
   useEffect(() => {
-    // Check saved session
-    checkSavedSession();
+    // 1. Listen to Firebase Auth state for Wali Kelas
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+      if (user) {
+        setIsTeacher(true);
+        setCurrentUser(null);
+      } else {
+        setIsTeacher(false);
+        // If not teacher, check saved parent PIN
+        checkSavedParentSession();
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  async function checkSavedSession() {
+  async function checkSavedParentSession() {
     try {
-      const savedPin = localStorage.getItem("infokelas_pin");
+      const savedPin = localStorage.getItem("infokelas_parent_pin");
       if (savedPin) {
-        await executePinLogin(savedPin);
+        await executeParentPinLogin(savedPin, false);
       }
     } catch (e) {
       console.warn("Failed checking session:", e);
-    } finally {
-      setIsLoading(false);
     }
   }
 
-  async function executePinLogin(p: string) {
+  async function executeParentPinLogin(p: string, showErrors = true) {
     const trimmed = p.trim();
     if (!trimmed) {
-      setErrorMessage("Silakan masukkan PIN ya 🙏");
+      if (showErrors) setErrorMessage("Silakan masukkan PIN ya 🙏");
       return;
     }
 
-    // 1. Cek Admin PIN (470560)
-    if (verifyAdminPin(trimmed)) {
-      setIsTeacher(true);
-      setCurrentUser(null);
-      setErrorMessage("");
-      localStorage.setItem("infokelas_pin", trimmed);
+    // Jika mencoba PIN admin lama, arahkan ke Firebase Auth
+    if (trimmed === "470560") {
+      if (showErrors) {
+        setErrorMessage("PIN Wali Kelas telah diganti. Silakan masuk melalui tab 'Wali Kelas' dengan akun Firebase Auth.");
+        setLoginMode("guru");
+      }
       return;
     }
 
-    // 2. Cek Murid
     const hashed = await hashPin(trimmed);
     const students = await getStudents();
 
-    // Match by PIN langsung atau Hash PIN atau NISN
+    // Match student by PIN or hashed PIN
     const student = students.find(
       (s) => s.pin === trimmed || s.pinHash === hashed || (nisnInput && s.nisn === nisnInput.trim() && s.pin === trimmed)
     );
@@ -71,23 +81,23 @@ export default function Home() {
       setCurrentUser(student);
       setIsTeacher(false);
       setErrorMessage("");
-      localStorage.setItem("infokelas_pin", trimmed);
+      localStorage.setItem("infokelas_parent_pin", trimmed);
     } else {
-      setErrorMessage("PIN belum tepat, coba lagi ya 🙏");
+      if (showErrors) setErrorMessage("PIN belum tepat, coba lagi ya 🙏");
     }
   }
 
-  async function handlePinSubmit(e: React.FormEvent) {
+  async function handleParentPinSubmit(e: React.FormEvent) {
     e.preventDefault();
     setIsLoading(true);
-    await executePinLogin(pinInput);
+    await executeParentPinLogin(pinInput, true);
     setIsLoading(false);
   }
 
-  async function handleEmailLogin(e: React.FormEvent) {
+  async function handleTeacherEmailLogin(e: React.FormEvent) {
     e.preventDefault();
-    if (!guruEmail || !guruPassword) {
-      setErrorMessage("Mohon lengkapi email dan password guru.");
+    if (!guruEmail.trim() || !guruPassword) {
+      setErrorMessage("Mohon lengkapi email dan password wali kelas.");
       return;
     }
 
@@ -95,17 +105,17 @@ export default function Home() {
     setErrorMessage("");
 
     try {
-      await signInWithEmailAndPassword(auth, guruEmail, guruPassword);
+      await signInWithEmailAndPassword(auth, guruEmail.trim(), guruPassword);
       setIsTeacher(true);
       setCurrentUser(null);
-      localStorage.setItem("infokelas_pin", "470560");
+      // Remove any parent pin
+      localStorage.removeItem("infokelas_parent_pin");
     } catch (err: any) {
-      console.warn("Firebase Auth error:", err);
-      // Fallback friendly message
-      if (err.code === "auth/invalid-credential" || err.code === "auth/user-not-found" || err.code === "auth/wrong-password") {
-        setErrorMessage("Email atau password guru belum sesuai.");
-      } else if (err.code === "auth/configuration-not-found" || err.message?.includes("configuration-not-found")) {
-        setErrorMessage("Provider Email/Password belum diaktifkan di Firebase Console. Anda bisa menggunakan PIN Guru (470560) untuk masuk!");
+      console.warn("Firebase Auth login error:", err);
+      if (err.code === "auth/invalid-credential" || err.code === "auth/wrong-password" || err.code === "auth/user-not-found") {
+        setErrorMessage("Email atau password wali kelas salah. Silakan periksa kembali.");
+      } else if (err.code === "auth/too-many-requests") {
+        setErrorMessage("Terlalu banyak percobaan gagal. Silakan tunggu beberapa saat lagi.");
       } else {
         setErrorMessage(err.message || "Gagal masuk via Firebase Auth.");
       }
@@ -114,46 +124,40 @@ export default function Home() {
     }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    if (isTeacher) {
+      try {
+        await signOut(auth);
+      } catch (e) {
+        console.warn("SignOut error:", e);
+      }
+      setIsTeacher(false);
+      setFirebaseUser(null);
+    }
+
     setCurrentUser(null);
-    setIsTeacher(false);
     setPinInput("");
     setNisnInput("");
+    setGuruPassword("");
     setErrorMessage("");
     try {
-      localStorage.removeItem("infokelas_pin");
+      localStorage.removeItem("infokelas_parent_pin");
     } catch {}
-  }
-
-  if (isLoading) {
-    return (
-      <main className="flex-1 flex flex-col justify-between">
-        <div className="w">
-          <Header />
-          <div className="c text-center py-10">
-            <div className="text-sm font-bold text-[#5d7f93] animate-pulse">
-              Memuat data kelas... 🎒
-            </div>
-          </div>
-        </div>
-        <Footer />
-      </main>
-    );
   }
 
   return (
     <main className="flex-1 flex flex-col justify-between">
-      {/* Jika Orang Tua sudah Login */}
+      {/* 1. Jika Wali Murid sudah Login */}
       {currentUser && (
         <ParentView student={currentUser} onLogout={handleLogout} />
       )}
 
-      {/* Jika Guru sudah Login */}
+      {/* 2. Jika Wali Kelas sudah Login via Firebase Auth */}
       {isTeacher && (
         <TeacherView onLogout={handleLogout} />
       )}
 
-      {/* Tampilan Login Utama (Bila Belum Login) */}
+      {/* 3. Tampilan Login Utama */}
       {!currentUser && !isTeacher && (
         <div className="w">
           <Header
@@ -163,124 +167,137 @@ export default function Home() {
             showPills={true}
           />
 
-          {loginMode === "pin" ? (
-            <div className="c">
-              <h2>Masukkan PIN</h2>
-              <form onSubmit={handlePinSubmit} className="space-y-3">
-                <div className="flex gap-2">
-                  <input
-                    id="pin"
-                    type="password"
-                    inputMode="numeric"
-                    placeholder="PIN dari wali kelas"
-                    value={pinInput}
-                    onChange={(e) => setPinInput(e.target.value)}
-                    className="flex-1 text-base font-bold tracking-widest text-center"
-                    autoFocus
-                  />
-                  <button type="submit" className="btn-wonder text-base">
-                    Masuk
-                  </button>
-                </div>
+          <div className="c">
+            {/* Tab Navigasi Login */}
+            <div className="flex bg-[#e8f8f4] p-1.5 rounded-2xl mb-4 border border-[#ffd45a]/50">
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginMode("pin");
+                  setErrorMessage("");
+                }}
+                className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs sm:text-sm transition-all ${
+                  loginMode === "pin"
+                    ? "bg-[#ffd45a] text-[#5a3a00] shadow-sm"
+                    : "text-[#5d7f93] hover:text-[#17456b]"
+                }`}
+              >
+                👨‍👩‍👧 Wali Murid (PIN)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginMode("guru");
+                  setErrorMessage("");
+                }}
+                className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs sm:text-sm transition-all ${
+                  loginMode === "guru"
+                    ? "bg-[#27a98a] text-white shadow-sm"
+                    : "text-[#5d7f93] hover:text-[#17456b]"
+                }`}
+              >
+                👩‍🏫 Wali Kelas (Firebase Auth)
+              </button>
+            </div>
 
-                {errorMessage && (
-                  <div className="text-xs font-bold text-[#ee6b6e] text-center mt-2">
-                    {errorMessage}
+            {/* Form Mode 1: Wali Murid (PIN) */}
+            {loginMode === "pin" ? (
+              <div>
+                <h2>Masukkan PIN Siswa</h2>
+                <p className="text-xs text-[#5d7f93] text-center mb-3">
+                  Masukkan 4 digit PIN yang dibagikan wali kelas untuk melihat informasi harian anak.
+                </p>
+
+                <form onSubmit={handleParentPinSubmit} className="space-y-3">
+                  <div className="flex gap-2">
+                    <input
+                      id="pin"
+                      type="password"
+                      inputMode="numeric"
+                      placeholder="PIN 4 digit"
+                      value={pinInput}
+                      onChange={(e) => setPinInput(e.target.value)}
+                      className="flex-1 text-base font-bold tracking-widest text-center"
+                      autoFocus
+                    />
+                    <button type="submit" disabled={isLoading} className="btn-wonder text-base">
+                      {isLoading ? "..." : "Masuk"}
+                    </button>
                   </div>
-                )}
-              </form>
 
-              {/* Petunjuk Akses */}
-              <div className="mt-5 pt-3 border-t border-dashed border-[#ffd45a]/60 text-xs text-[#5d7f93]">
-                <div className="font-bold text-[#17456b] mb-1">💡 Bantuan Akses Masuk:</div>
-                <div className="leading-relaxed">
-                  • <b>Orang Tua Murid:</b> Gunakan 4 digit PIN yang dibagikan guru (contoh: Arka <code>5594</code>, Karel <code>6726</code>, Nicho <code>2460</code>, Bella <code>4090</code>, Ragil <code>5389</code>).
-                  <br />
-                  • <b>Wali Kelas / Guru:</b> Gunakan PIN Guru <code>470560</code> atau login via email Firebase Auth.
-                </div>
+                  {errorMessage && (
+                    <div className="text-xs font-bold text-[#ee6b6e] text-center mt-2">
+                      {errorMessage}
+                    </div>
+                  )}
+                </form>
 
-                <div className="mt-3 text-center">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setLoginMode("guru_email");
-                      setErrorMessage("");
-                    }}
-                    className="text-xs font-bold text-[#1c5fa8] hover:underline"
-                  >
-                    🔐 Masuk sebagai Guru via Email &amp; Password Firebase
-                  </button>
+                {/* Petunjuk PIN Murid */}
+                <div className="mt-5 pt-3 border-t border-dashed border-[#ffd45a]/60 text-xs text-[#5d7f93]">
+                  <div className="font-bold text-[#17456b] mb-1">💡 Contoh PIN Wali Murid:</div>
+                  <div className="leading-relaxed">
+                    Arka: <code>5594</code> • Karel: <code>6726</code> • Rashya: <code>4373</code> • Bella: <code>4090</code> • Bilqis: <code>7391</code><br />
+                    Ghita: <code>9637</code> • Nazriel: <code>5004</code> • Nicho: <code>2460</code> • Yusak: <code>4809</code> • Ragil: <code>5389</code>
+                  </div>
                 </div>
               </div>
-            </div>
-          ) : (
-            <div className="c">
-              <h2>Login Guru (Firebase Auth)</h2>
-              <form onSubmit={handleEmailLogin} className="space-y-3">
-                <div>
-                  <label className="text-xs font-bold text-[#17456b] block mb-1">Email Guru:</label>
-                  <input
-                    type="email"
-                    placeholder="guru@sdnkaliwungu05.sch.id"
-                    value={guruEmail}
-                    onChange={(e) => setGuruEmail(e.target.value)}
-                    className="w-full text-sm"
-                    required
-                  />
-                </div>
+            ) : (
+              /* Form Mode 2: Wali Kelas (Firebase Auth) */
+              <div>
+                <h2>Login Wali Kelas</h2>
+                <p className="text-xs text-[#5d7f93] text-center mb-3">
+                  Masuk menggunakan akun Firebase Authentication resmi wali kelas.
+                </p>
 
-                <div>
-                  <label className="text-xs font-bold text-[#17456b] block mb-1">Password:</label>
-                  <input
-                    type="password"
-                    placeholder="••••••••"
-                    value={guruPassword}
-                    onChange={(e) => setGuruPassword(e.target.value)}
-                    className="w-full text-sm"
-                    required
-                  />
-                </div>
-
-                {errorMessage && (
-                  <div className="text-xs font-bold text-[#ee6b6e] text-center mt-1">
-                    {errorMessage}
+                <form onSubmit={handleTeacherEmailLogin} className="space-y-3">
+                  <div>
+                    <label className="text-xs font-bold text-[#17456b] block mb-1">Email Wali Kelas:</label>
+                    <input
+                      type="email"
+                      placeholder="amarianadewi@gmail.com"
+                      value={guruEmail}
+                      onChange={(e) => setGuruEmail(e.target.value)}
+                      className="w-full text-sm font-semibold"
+                      required
+                    />
                   </div>
-                )}
 
-                <div className="flex gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setLoginMode("pin");
-                      setErrorMessage("");
-                    }}
-                    className="btn-wonder flex-1 bg-gray-200 text-gray-700"
-                  >
-                    ← Kembali ke PIN
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isLoggingInEmail}
-                    className="btn-wonder flex-1"
-                  >
-                    {isLoggingInEmail ? "Masuk..." : "Masuk Guru"}
-                  </button>
-                </div>
+                  <div>
+                    <label className="text-xs font-bold text-[#17456b] block mb-1">Password:</label>
+                    <input
+                      type="password"
+                      placeholder="Masukkan password"
+                      value={guruPassword}
+                      onChange={(e) => setGuruPassword(e.target.value)}
+                      className="w-full text-sm"
+                      required
+                    />
+                  </div>
 
-                <div className="text-center mt-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      executePinLogin("470560");
-                    }}
-                    className="text-xs font-bold text-[#27a98a] hover:underline"
-                  >
-                    ⚡ Atau Masuk Langsung dengan PIN Guru (470560)
-                  </button>
+                  {errorMessage && (
+                    <div className="text-xs font-bold text-[#ee6b6e] text-center mt-1">
+                      {errorMessage}
+                    </div>
+                  )}
+
+                  <div className="pt-1">
+                    <button
+                      type="submit"
+                      disabled={isLoggingInEmail}
+                      className="btn-wonder w-full py-3 text-sm font-bold bg-[#27a98a] text-white"
+                      style={{ background: "linear-gradient(#27a98a, #1b8f7a)" }}
+                    >
+                      {isLoggingInEmail ? "Memverifikasi ke Firebase..." : "🔐 Masuk sebagai Wali Kelas"}
+                    </button>
+                  </div>
+                </form>
+
+                <div className="mt-4 pt-3 border-t border-dashed border-[#ffd45a]/60 text-xs text-[#5d7f93] text-center">
+                  Akun terdaftar: <b>amarianadewi@gmail.com</b>
                 </div>
-              </form>
-            </div>
-          )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

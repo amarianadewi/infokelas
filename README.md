@@ -47,9 +47,10 @@ Aplikasi ini mempertahankan 100% antarmuka dan pengalaman pengguna versi awal (*
 | **Yusak** | 0144809009 | `4809` |
 | **Ragil** | 0145389010 | `5389` |
 
-### Mode Guru:
-- **PIN Guru:** `470560` (langsung masuk ke Mode Guru)
-- **Firebase Auth:** Login menggunakan email & password guru jika sudah didaftarkan di Firebase Authentication.
+### Mode Wali Kelas (Firebase Authentication):
+- **Email:** `amarianadewi@gmail.com`
+- **Password:** `20320722`
+- Akses penuh untuk presensi, jam pulang, kegiatan & foto, PR/pengumuman, iuran, izin online, dan data siswa.
 
 ---
 

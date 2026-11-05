@@ -96,5 +96,6 @@ export const INITIAL_FEES: FeeItem[] = [
 ];
 
 export const APP_SALT = "kw05";
-export const ADMIN_PIN = "470560";
-export const ADMIN_HASH = "e9e2c42b37346dc4908a971a0aa7104e5edf7bdf034aacecc89d9ba0df736fcd";
+export const WALI_KELAS_EMAIL = "amarianadewi@gmail.com";
+
+

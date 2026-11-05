@@ -82,3 +82,4 @@ export interface ClassSettings {
   className: string;
   academicYear: string;
 }
+

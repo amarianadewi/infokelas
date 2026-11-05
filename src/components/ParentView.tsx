@@ -451,3 +451,4 @@ export default function ParentView({ student, onLogout }: ParentViewProps) {
     </div>
   );
 }
+

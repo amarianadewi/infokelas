@@ -57,3 +57,4 @@ export function downloadCSV(filename: string, csvContent: string) {
   link.click();
   document.body.removeChild(link);
 }
+

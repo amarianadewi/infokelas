@@ -24,8 +24,7 @@ import {
   INITIAL_ACTIVITIES,
   INITIAL_ANNOUNCEMENTS,
   INITIAL_FEES,
-  APP_SALT,
-  ADMIN_HASH
+  APP_SALT
 } from "./initialData";
 
 const STORAGE_KEYS = {
@@ -48,9 +47,6 @@ export async function hashPin(pin: string): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-export function verifyAdminPin(pinOrHash: string): boolean {
-  return pinOrHash === "470560" || pinOrHash === ADMIN_HASH;
-}
 
 // LocalStorage helpers
 function getLocal<T>(key: string, fallback: T): T {
@@ -509,3 +505,4 @@ export async function syncAllToFirebase(): Promise<{ success: boolean; message: 
     return { success: false, message: `Gagal sinkron ke Firebase: ${err?.message || "Pastikan Firestore Database telah diaktifkan di Firebase Console."}` };
   }
 }
+

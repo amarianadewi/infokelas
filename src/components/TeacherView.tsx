@@ -430,8 +430,8 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
       {/* Header Guru */}
       <Header
         title1="Mode"
-        title2="Guru"
-        subtitle="SDN Kaliwungu 05 • Kelas 4 Ceria ✏️"
+        title2="Wali Kelas"
+        subtitle="SDN Kaliwungu 05 • amarianadewi@gmail.com ✏️"
         showPills={false}
       />
 
@@ -1134,3 +1134,4 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
     </div>
   );
 }
+
