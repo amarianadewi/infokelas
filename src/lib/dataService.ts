@@ -5,7 +5,9 @@ import {
   getDocs,
   setDoc,
   deleteDoc,
-  getDoc
+  getDoc,
+  onSnapshot,
+  Unsubscribe
 } from "firebase/firestore";
 import {
   Student,
@@ -47,7 +49,6 @@ export async function hashPin(pin: string): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-
 // LocalStorage helpers
 function getLocal<T>(key: string, fallback: T): T {
   if (typeof window === "undefined") return fallback;
@@ -68,83 +69,105 @@ function setLocal<T>(key: string, value: T): void {
   }
 }
 
-let isFirestoreAvailable = true;
-let lastFirestoreError = "";
-
-export function getFirestoreSyncState() {
-  return { isAvailable: isFirestoreAvailable, lastError: lastFirestoreError };
-}
+// =========================================================================
+// REALTIME SUBSCRIPTIONS & DIRECT MUTATIONS (FIREBASE FIRESTORE REALTIME)
+// =========================================================================
 
 // 1. STUDENTS
+export function subscribeStudents(callback: (students: Student[]) => void): Unsubscribe {
+  return onSnapshot(
+    collection(db, "students"),
+    (snap) => {
+      if (!snap.empty) {
+        const list: Student[] = [];
+        snap.forEach((d) => list.push({ ...(d.data() as Student), id: d.id }));
+        setLocal(STORAGE_KEYS.STUDENTS, list);
+        callback(list);
+      } else {
+        callback(getLocal<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS));
+      }
+    },
+    (err) => {
+      console.warn("Firestore subscribeStudents error:", err);
+      callback(getLocal<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS));
+    }
+  );
+}
+
 export async function getStudents(): Promise<Student[]> {
   try {
     const snap = await getDocs(collection(db, "students"));
     if (!snap.empty) {
       const list: Student[] = [];
-      snap.forEach(d => list.push({ ...(d.data() as Student), id: d.id }));
+      snap.forEach((d) => list.push({ ...(d.data() as Student), id: d.id }));
       setLocal(STORAGE_KEYS.STUDENTS, list);
-      isFirestoreAvailable = true;
       return list;
     }
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
+  } catch (err) {
+    console.warn("Firestore getStudents error:", err);
   }
-
-  // Fallback to local
   return getLocal<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
 }
 
 export async function saveStudent(student: Student): Promise<void> {
   const students = await getStudents();
-  const idx = students.findIndex(s => s.id === student.id || s.name.toLowerCase() === student.name.toLowerCase());
-  if (idx >= 0) {
-    students[idx] = student;
-  } else {
-    students.push(student);
-  }
+  const idx = students.findIndex((s) => s.id === student.id || s.name.toLowerCase() === student.name.toLowerCase());
+  if (idx >= 0) students[idx] = student;
+  else students.push(student);
   setLocal(STORAGE_KEYS.STUDENTS, students);
 
-  try {
-    await setDoc(doc(db, "students", student.id), student);
-    isFirestoreAvailable = true;
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct write to Firebase Firestore
+  await setDoc(doc(db, "students", student.id), student);
 }
 
 export async function deleteStudent(studentId: string): Promise<void> {
-  const students = (await getStudents()).filter(s => s.id !== studentId);
+  const students = (await getStudents()).filter((s) => s.id !== studentId);
   setLocal(STORAGE_KEYS.STUDENTS, students);
 
-  try {
-    await deleteDoc(doc(db, "students", studentId));
-  } catch (err: any) {
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct delete from Firebase Firestore
+  await deleteDoc(doc(db, "students", studentId));
 }
 
-// 2. ATTENDANCE
+// 2. ATTENDANCE (PRESENSI)
+export function subscribeAttendance(date: string, callback: (records: AttendanceRecord) => void): Unsubscribe {
+  return onSnapshot(
+    doc(db, "attendance", date),
+    (snap) => {
+      if (snap.exists()) {
+        const rec = (snap.data().records || {}) as AttendanceRecord;
+        const all = getLocal<{ [d: string]: AttendanceRecord }>(STORAGE_KEYS.ATTENDANCE, {
+          "2026-11-05": INITIAL_ATTENDANCE_RECORD
+        });
+        all[date] = rec;
+        setLocal(STORAGE_KEYS.ATTENDANCE, all);
+        callback(rec);
+      } else {
+        const all = getLocal<{ [d: string]: AttendanceRecord }>(STORAGE_KEYS.ATTENDANCE, {
+          "2026-11-05": INITIAL_ATTENDANCE_RECORD
+        });
+        callback(all[date] || {});
+      }
+    },
+    (err) => {
+      console.warn("Firestore subscribeAttendance error:", err);
+      const all = getLocal<{ [d: string]: AttendanceRecord }>(STORAGE_KEYS.ATTENDANCE, {
+        "2026-11-05": INITIAL_ATTENDANCE_RECORD
+      });
+      callback(all[date] || {});
+    }
+  );
+}
+
 export async function getAttendance(date: string): Promise<AttendanceRecord> {
   try {
     const snap = await getDoc(doc(db, "attendance", date));
     if (snap.exists()) {
-      const data = snap.data();
-      const rec = (data.records || {}) as AttendanceRecord;
-      const all = getLocal<{ [d: string]: AttendanceRecord }>(STORAGE_KEYS.ATTENDANCE, {
-        "2026-11-05": INITIAL_ATTENDANCE_RECORD
-      });
-      all[date] = rec;
-      setLocal(STORAGE_KEYS.ATTENDANCE, all);
-      isFirestoreAvailable = true;
+      const rec = (snap.data().records || {}) as AttendanceRecord;
       return rec;
     }
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
+  } catch (err) {
+    console.warn("Firestore getAttendance error:", err);
   }
-
   const all = getLocal<{ [d: string]: AttendanceRecord }>(STORAGE_KEYS.ATTENDANCE, {
     "2026-11-05": INITIAL_ATTENDANCE_RECORD
   });
@@ -156,18 +179,15 @@ export async function getAllAttendance(): Promise<{ [d: string]: AttendanceRecor
     const snap = await getDocs(collection(db, "attendance"));
     if (!snap.empty) {
       const result: { [d: string]: AttendanceRecord } = {};
-      snap.forEach(docSnap => {
+      snap.forEach((docSnap) => {
         result[docSnap.id] = (docSnap.data().records || {}) as AttendanceRecord;
       });
       setLocal(STORAGE_KEYS.ATTENDANCE, result);
-      isFirestoreAvailable = true;
       return result;
     }
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
+  } catch (err) {
+    console.warn("Firestore getAllAttendance error:", err);
   }
-
   return getLocal<{ [d: string]: AttendanceRecord }>(STORAGE_KEYS.ATTENDANCE, {
     "2026-11-05": INITIAL_ATTENDANCE_RECORD
   });
@@ -180,66 +200,90 @@ export async function saveAttendance(date: string, records: AttendanceRecord): P
   all[date] = records;
   setLocal(STORAGE_KEYS.ATTENDANCE, all);
 
-  try {
-    await setDoc(doc(db, "attendance", date), {
-      date,
-      records,
-      updatedAt: new Date().toISOString()
-    });
-    isFirestoreAvailable = true;
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct real-time write to Firebase Firestore
+  await setDoc(doc(db, "attendance", date), {
+    date,
+    records,
+    updatedAt: new Date().toISOString()
+  });
 }
 
-// 3. DISMISSAL SETTINGS
+// 3. DISMISSAL SETTINGS (JAM PULANG)
+export function subscribeDismissal(callback: (settings: DismissalSettings) => void): Unsubscribe {
+  return onSnapshot(
+    doc(db, "dismissal_settings", "default"),
+    (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() as DismissalSettings;
+        setLocal(STORAGE_KEYS.DISMISSAL, data);
+        callback(data);
+      } else {
+        callback(getLocal<DismissalSettings>(STORAGE_KEYS.DISMISSAL, INITIAL_DISMISSAL));
+      }
+    },
+    (err) => {
+      console.warn("Firestore subscribeDismissal error:", err);
+      callback(getLocal<DismissalSettings>(STORAGE_KEYS.DISMISSAL, INITIAL_DISMISSAL));
+    }
+  );
+}
+
 export async function getDismissalSettings(): Promise<DismissalSettings> {
   try {
     const snap = await getDoc(doc(db, "dismissal_settings", "default"));
     if (snap.exists()) {
       const data = snap.data() as DismissalSettings;
       setLocal(STORAGE_KEYS.DISMISSAL, data);
-      isFirestoreAvailable = true;
       return data;
     }
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
+  } catch (err) {
+    console.warn("Firestore getDismissalSettings error:", err);
   }
-
   return getLocal<DismissalSettings>(STORAGE_KEYS.DISMISSAL, INITIAL_DISMISSAL);
 }
 
 export async function saveDismissalSettings(settings: DismissalSettings): Promise<void> {
   setLocal(STORAGE_KEYS.DISMISSAL, settings);
 
-  try {
-    await setDoc(doc(db, "dismissal_settings", "default"), settings);
-    isFirestoreAvailable = true;
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct real-time write to Firebase Firestore
+  await setDoc(doc(db, "dismissal_settings", "default"), settings);
 }
 
-// 4. CLASS ACTIVITIES
+// 4. CLASS ACTIVITIES (KEGIATAN & FOTO)
+export function subscribeActivities(callback: (acts: ClassActivity[]) => void): Unsubscribe {
+  return onSnapshot(
+    collection(db, "activities"),
+    (snap) => {
+      if (!snap.empty) {
+        const list: ClassActivity[] = [];
+        snap.forEach((d) => list.push({ ...(d.data() as ClassActivity), id: d.id }));
+        list.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+        setLocal(STORAGE_KEYS.ACTIVITIES, list);
+        callback(list);
+      } else {
+        callback(getLocal<ClassActivity[]>(STORAGE_KEYS.ACTIVITIES, INITIAL_ACTIVITIES));
+      }
+    },
+    (err) => {
+      console.warn("Firestore subscribeActivities error:", err);
+      callback(getLocal<ClassActivity[]>(STORAGE_KEYS.ACTIVITIES, INITIAL_ACTIVITIES));
+    }
+  );
+}
+
 export async function getActivities(): Promise<ClassActivity[]> {
   try {
     const snap = await getDocs(collection(db, "activities"));
     if (!snap.empty) {
       const list: ClassActivity[] = [];
-      snap.forEach(d => list.push({ ...(d.data() as ClassActivity), id: d.id }));
+      snap.forEach((d) => list.push({ ...(d.data() as ClassActivity), id: d.id }));
       list.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
       setLocal(STORAGE_KEYS.ACTIVITIES, list);
-      isFirestoreAvailable = true;
       return list;
     }
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
+  } catch (err) {
+    console.warn("Firestore getActivities error:", err);
   }
-
   return getLocal<ClassActivity[]>(STORAGE_KEYS.ACTIVITIES, INITIAL_ACTIVITIES);
 }
 
@@ -247,43 +291,53 @@ export async function addActivity(activity: ClassActivity): Promise<void> {
   const list = [activity, ...(await getActivities())].slice(0, 30);
   setLocal(STORAGE_KEYS.ACTIVITIES, list);
 
-  try {
-    await setDoc(doc(db, "activities", activity.id), activity);
-    isFirestoreAvailable = true;
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct real-time write to Firebase Firestore
+  await setDoc(doc(db, "activities", activity.id), activity);
 }
 
 export async function deleteActivity(id: string): Promise<void> {
-  const list = (await getActivities()).filter(a => a.id !== id);
+  const list = (await getActivities()).filter((a) => a.id !== id);
   setLocal(STORAGE_KEYS.ACTIVITIES, list);
 
-  try {
-    await deleteDoc(doc(db, "activities", id));
-  } catch (err: any) {
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct real-time delete from Firebase Firestore
+  await deleteDoc(doc(db, "activities", id));
 }
 
-// 5. ANNOUNCEMENTS (PR, Jadwal, Libur, Info)
+// 5. ANNOUNCEMENTS (PR, JADWAL, LIBUR, INFO)
+export function subscribeAnnouncements(callback: (anns: Announcement[]) => void): Unsubscribe {
+  return onSnapshot(
+    collection(db, "announcements"),
+    (snap) => {
+      if (!snap.empty) {
+        const list: Announcement[] = [];
+        snap.forEach((d) => list.push({ ...(d.data() as Announcement), id: d.id }));
+        list.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+        setLocal(STORAGE_KEYS.ANNOUNCEMENTS, list);
+        callback(list);
+      } else {
+        callback(getLocal<Announcement[]>(STORAGE_KEYS.ANNOUNCEMENTS, INITIAL_ANNOUNCEMENTS));
+      }
+    },
+    (err) => {
+      console.warn("Firestore subscribeAnnouncements error:", err);
+      callback(getLocal<Announcement[]>(STORAGE_KEYS.ANNOUNCEMENTS, INITIAL_ANNOUNCEMENTS));
+    }
+  );
+}
+
 export async function getAnnouncements(): Promise<Announcement[]> {
   try {
     const snap = await getDocs(collection(db, "announcements"));
     if (!snap.empty) {
       const list: Announcement[] = [];
-      snap.forEach(d => list.push({ ...(d.data() as Announcement), id: d.id }));
+      snap.forEach((d) => list.push({ ...(d.data() as Announcement), id: d.id }));
       list.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
       setLocal(STORAGE_KEYS.ANNOUNCEMENTS, list);
-      isFirestoreAvailable = true;
       return list;
     }
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
+  } catch (err) {
+    console.warn("Firestore getAnnouncements error:", err);
   }
-
   return getLocal<Announcement[]>(STORAGE_KEYS.ANNOUNCEMENTS, INITIAL_ANNOUNCEMENTS);
 }
 
@@ -291,42 +345,51 @@ export async function addAnnouncement(announcement: Announcement): Promise<void>
   const list = [announcement, ...(await getAnnouncements())].slice(0, 50);
   setLocal(STORAGE_KEYS.ANNOUNCEMENTS, list);
 
-  try {
-    await setDoc(doc(db, "announcements", announcement.id), announcement);
-    isFirestoreAvailable = true;
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct real-time write to Firebase Firestore
+  await setDoc(doc(db, "announcements", announcement.id), announcement);
 }
 
 export async function deleteAnnouncement(id: string): Promise<void> {
-  const list = (await getAnnouncements()).filter(a => a.id !== id);
+  const list = (await getAnnouncements()).filter((a) => a.id !== id);
   setLocal(STORAGE_KEYS.ANNOUNCEMENTS, list);
 
-  try {
-    await deleteDoc(doc(db, "announcements", id));
-  } catch (err: any) {
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct real-time delete from Firebase Firestore
+  await deleteDoc(doc(db, "announcements", id));
 }
 
-// 6. FEES & PAYMENTS
+// 6. FEES & PAYMENTS (IURAN & STATUS PEMBAYARAN)
+export function subscribeFees(callback: (fees: FeeItem[]) => void): Unsubscribe {
+  return onSnapshot(
+    collection(db, "fees"),
+    (snap) => {
+      if (!snap.empty) {
+        const list: FeeItem[] = [];
+        snap.forEach((d) => list.push({ ...(d.data() as FeeItem), id: d.id }));
+        setLocal(STORAGE_KEYS.FEES, list);
+        callback(list);
+      } else {
+        callback(getLocal<FeeItem[]>(STORAGE_KEYS.FEES, INITIAL_FEES));
+      }
+    },
+    (err) => {
+      console.warn("Firestore subscribeFees error:", err);
+      callback(getLocal<FeeItem[]>(STORAGE_KEYS.FEES, INITIAL_FEES));
+    }
+  );
+}
+
 export async function getFees(): Promise<FeeItem[]> {
   try {
     const snap = await getDocs(collection(db, "fees"));
     if (!snap.empty) {
       const list: FeeItem[] = [];
-      snap.forEach(d => list.push({ ...(d.data() as FeeItem), id: d.id }));
+      snap.forEach((d) => list.push({ ...(d.data() as FeeItem), id: d.id }));
       setLocal(STORAGE_KEYS.FEES, list);
-      isFirestoreAvailable = true;
       return list;
     }
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
+  } catch (err) {
+    console.warn("Firestore getFees error:", err);
   }
-
   return getLocal<FeeItem[]>(STORAGE_KEYS.FEES, INITIAL_FEES);
 }
 
@@ -334,42 +397,49 @@ export async function addFee(fee: FeeItem): Promise<void> {
   const list = [fee, ...(await getFees())];
   setLocal(STORAGE_KEYS.FEES, list);
 
-  try {
-    await setDoc(doc(db, "fees", fee.id), fee);
-    isFirestoreAvailable = true;
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct real-time write to Firebase Firestore
+  await setDoc(doc(db, "fees", fee.id), fee);
 }
 
 export async function deleteFee(feeId: string): Promise<void> {
-  const list = (await getFees()).filter(f => f.id !== feeId);
+  const list = (await getFees()).filter((f) => f.id !== feeId);
   setLocal(STORAGE_KEYS.FEES, list);
 
-  try {
-    await deleteDoc(doc(db, "fees", feeId));
-  } catch (err: any) {
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct real-time delete from Firebase Firestore
+  await deleteDoc(doc(db, "fees", feeId));
 }
 
-// Payments map: { [studentName]: { [feeId]: boolean } }
+export function subscribePayments(callback: (payments: { [studentName: string]: { [feeId: string]: boolean } }) => void): Unsubscribe {
+  return onSnapshot(
+    doc(db, "payments", "all"),
+    (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() as { [studentName: string]: { [feeId: string]: boolean } };
+        setLocal(STORAGE_KEYS.PAYMENTS, data);
+        callback(data);
+      } else {
+        callback(getLocal(STORAGE_KEYS.PAYMENTS, {}));
+      }
+    },
+    (err) => {
+      console.warn("Firestore subscribePayments error:", err);
+      callback(getLocal(STORAGE_KEYS.PAYMENTS, {}));
+    }
+  );
+}
+
 export async function getPayments(): Promise<{ [studentName: string]: { [feeId: string]: boolean } }> {
   try {
     const snap = await getDoc(doc(db, "payments", "all"));
     if (snap.exists()) {
       const data = snap.data() as { [studentName: string]: { [feeId: string]: boolean } };
       setLocal(STORAGE_KEYS.PAYMENTS, data);
-      isFirestoreAvailable = true;
       return data;
     }
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
+  } catch (err) {
+    console.warn("Firestore getPayments error:", err);
   }
-
-  return getLocal<{ [studentName: string]: { [feeId: string]: boolean } }>(STORAGE_KEYS.PAYMENTS, {});
+  return getLocal(STORAGE_KEYS.PAYMENTS, {});
 }
 
 export async function togglePayment(studentName: string, feeId: string): Promise<boolean> {
@@ -379,13 +449,8 @@ export async function togglePayment(studentName: string, feeId: string): Promise
   payments[studentName][feeId] = newStatus;
   setLocal(STORAGE_KEYS.PAYMENTS, payments);
 
-  try {
-    await setDoc(doc(db, "payments", "all"), payments);
-    isFirestoreAvailable = true;
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct real-time write to Firebase Firestore
+  await setDoc(doc(db, "payments", "all"), payments);
   return newStatus;
 }
 
@@ -394,8 +459,8 @@ export async function getStudentFees(studentName: string): Promise<StudentFeeSta
   const studentPayments = payments[studentName] || {};
 
   return fees
-    .filter(f => f.target === "*" || f.target === studentName)
-    .map(f => ({
+    .filter((f) => f.target === "*" || f.target === studentName)
+    .map((f) => ({
       id: f.id,
       feeId: f.id,
       title: f.title,
@@ -404,23 +469,41 @@ export async function getStudentFees(studentName: string): Promise<StudentFeeSta
     }));
 }
 
-// 7. LEAVE REQUESTS (Izin Online)
+// 7. LEAVE REQUESTS (IZIN ONLINE)
+export function subscribeLeaveRequests(callback: (requests: LeaveRequest[]) => void): Unsubscribe {
+  return onSnapshot(
+    collection(db, "leave_requests"),
+    (snap) => {
+      if (!snap.empty) {
+        const list: LeaveRequest[] = [];
+        snap.forEach((d) => list.push({ ...(d.data() as LeaveRequest), id: d.id }));
+        list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        setLocal(STORAGE_KEYS.LEAVE, list);
+        callback(list);
+      } else {
+        callback(getLocal<LeaveRequest[]>(STORAGE_KEYS.LEAVE, []));
+      }
+    },
+    (err) => {
+      console.warn("Firestore subscribeLeaveRequests error:", err);
+      callback(getLocal<LeaveRequest[]>(STORAGE_KEYS.LEAVE, []));
+    }
+  );
+}
+
 export async function getLeaveRequests(): Promise<LeaveRequest[]> {
   try {
     const snap = await getDocs(collection(db, "leave_requests"));
     if (!snap.empty) {
       const list: LeaveRequest[] = [];
-      snap.forEach(d => list.push({ ...(d.data() as LeaveRequest), id: d.id }));
+      snap.forEach((d) => list.push({ ...(d.data() as LeaveRequest), id: d.id }));
       list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       setLocal(STORAGE_KEYS.LEAVE, list);
-      isFirestoreAvailable = true;
       return list;
     }
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
+  } catch (err) {
+    console.warn("Firestore getLeaveRequests error:", err);
   }
-
   return getLocal<LeaveRequest[]>(STORAGE_KEYS.LEAVE, []);
 }
 
@@ -428,13 +511,8 @@ export async function addLeaveRequest(req: LeaveRequest): Promise<void> {
   const list = [req, ...(await getLeaveRequests())];
   setLocal(STORAGE_KEYS.LEAVE, list);
 
-  try {
-    await setDoc(doc(db, "leave_requests", req.id), req);
-    isFirestoreAvailable = true;
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct real-time write to Firebase Firestore
+  await setDoc(doc(db, "leave_requests", req.id), req);
 }
 
 export async function updateLeaveRequestStatus(
@@ -443,18 +521,14 @@ export async function updateLeaveRequestStatus(
   applyToAttendance?: boolean
 ): Promise<void> {
   const list = await getLeaveRequests();
-  const target = list.find(r => r.id === id);
+  const target = list.find((r) => r.id === id);
   if (!target) return;
 
   target.status = status;
   setLocal(STORAGE_KEYS.LEAVE, list);
 
-  try {
-    await setDoc(doc(db, "leave_requests", id), target);
-    isFirestoreAvailable = true;
-  } catch (err: any) {
-    lastFirestoreError = err?.message || String(err);
-  }
+  // Direct real-time write to Firebase Firestore
+  await setDoc(doc(db, "leave_requests", id), target);
 
   if (applyToAttendance && status === "approved") {
     const attendance = await getAttendance(target.date);
@@ -462,47 +536,3 @@ export async function updateLeaveRequestStatus(
     await saveAttendance(target.date, attendance);
   }
 }
-
-// 8. ONE-CLICK SYNC ALL DATA TO FIREBASE
-export async function syncAllToFirebase(): Promise<{ success: boolean; message: string }> {
-  try {
-    const students = await getStudents();
-    for (const s of students) {
-      await setDoc(doc(db, "students", s.id), s);
-    }
-
-    const dismissal = await getDismissalSettings();
-    await setDoc(doc(db, "dismissal_settings", "default"), dismissal);
-
-    const allAttendance = await getAllAttendance();
-    for (const [date, records] of Object.entries(allAttendance)) {
-      await setDoc(doc(db, "attendance", date), { date, records, updatedAt: new Date().toISOString() });
-    }
-
-    const activities = await getActivities();
-    for (const a of activities) {
-      await setDoc(doc(db, "activities", a.id), a);
-    }
-
-    const announcements = await getAnnouncements();
-    for (const an of announcements) {
-      await setDoc(doc(db, "announcements", an.id), an);
-    }
-
-    const fees = await getFees();
-    for (const f of fees) {
-      await setDoc(doc(db, "fees", f.id), f);
-    }
-
-    const payments = await getPayments();
-    await setDoc(doc(db, "payments", "all"), payments);
-
-    isFirestoreAvailable = true;
-    return { success: true, message: "Seluruh data berhasil disinkronkan ke Firebase Cloud Firestore! 🎉" };
-  } catch (err: any) {
-    isFirestoreAvailable = false;
-    lastFirestoreError = err?.message || String(err);
-    return { success: false, message: `Gagal sinkron ke Firebase: ${err?.message || "Pastikan Firestore Database telah diaktifkan di Firebase Console."}` };
-  }
-}
-

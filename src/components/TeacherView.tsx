@@ -20,30 +20,28 @@ import {
   downloadCSV
 } from "@/lib/formatters";
 import {
-  getStudents,
   saveStudent,
   deleteStudent,
-  getAttendance,
   saveAttendance,
   getAllAttendance,
-  getDismissalSettings,
   saveDismissalSettings,
-  getActivities,
   addActivity,
   deleteActivity,
-  getAnnouncements,
   addAnnouncement,
   deleteAnnouncement,
-  getFees,
   addFee,
   deleteFee,
-  getPayments,
   togglePayment,
-  getLeaveRequests,
   updateLeaveRequestStatus,
-  syncAllToFirebase,
-  getFirestoreSyncState,
-  hashPin
+  hashPin,
+  subscribeStudents,
+  subscribeAttendance,
+  subscribeDismissal,
+  subscribeActivities,
+  subscribeAnnouncements,
+  subscribeFees,
+  subscribePayments,
+  subscribeLeaveRequests
 } from "@/lib/dataService";
 import Header from "./Header";
 
@@ -52,11 +50,10 @@ interface TeacherViewProps {
 }
 
 export default function TeacherView({ onLogout }: TeacherViewProps) {
-  const [tab, setTab] = useState<"absen" | "pulang" | "keg" | "info" | "iuran" | "izin" | "siswa" | "cloud">("absen");
-  const [dirty, setDirty] = useState(false);
-  const [savingMessage, setSavingMessage] = useState("");
+  const [tab, setTab] = useState<"absen" | "pulang" | "keg" | "info" | "iuran" | "izin" | "siswa">("absen");
+  const [toastMessage, setToastMessage] = useState("");
 
-  // Data state
+  // Data state (disinkronkan secara real-time via onSnapshot)
   const [students, setStudents] = useState<Student[]>([]);
   const [currentDate, setCurrentDate] = useState(getTodayDateString());
   const [attendance, setAttendance] = useState<AttendanceRecord>({});
@@ -70,7 +67,6 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
   const [fees, setFees] = useState<FeeItem[]>([]);
   const [payments, setPayments] = useState<{ [studentName: string]: { [feeId: string]: boolean } }>({});
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
-  const [syncState, setSyncState] = useState({ isAvailable: true, lastError: "" });
 
   // Form states
   // Jam pulang khusus
@@ -94,7 +90,7 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
   const [feeTitle, setFeeTitle] = useState("");
   const [feeAmount, setFeeAmount] = useState<number | "">("");
 
-  // Siswa baru / edit
+  // Siswa baru
   const [showAddStudentModal, setShowAddStudentModal] = useState(false);
   const [newStdName, setNewStdName] = useState("");
   const [newStdNisn, setNewStdNisn] = useState("");
@@ -102,45 +98,42 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
   const [newStdGender, setNewStdGender] = useState<"L" | "P">("L");
   const [newStdParent, setNewStdParent] = useState("");
 
+  // Setup Realtime Listeners ke Firebase Firestore
   useEffect(() => {
-    loadAll();
+    const unsubStudents = subscribeStudents((list) => setStudents(list));
+    const unsubDismissal = subscribeDismissal((data) => setDismissal(data));
+    const unsubActivities = subscribeActivities((list) => setActivities(list));
+    const unsubAnnouncements = subscribeAnnouncements((list) => setAnnouncements(list));
+    const unsubFees = subscribeFees((list) => setFees(list));
+    const unsubPayments = subscribePayments((data) => setPayments(data));
+    const unsubLeave = subscribeLeaveRequests((list) => setLeaveRequests(list));
+
+    return () => {
+      unsubStudents();
+      unsubDismissal();
+      unsubActivities();
+      unsubAnnouncements();
+      unsubFees();
+      unsubPayments();
+      unsubLeave();
+    };
   }, []);
 
+  // Realtime listener untuk presensi tanggal yang dipilih
   useEffect(() => {
-    loadAttendanceForDate(currentDate);
+    const unsubAtt = subscribeAttendance(currentDate, (rec) => {
+      setAttendance(rec);
+    });
+    return () => unsubAtt();
   }, [currentDate]);
 
-  async function loadAll() {
-    try {
-      const [stds, dism, acts, anns, fList, pays, leaves] = await Promise.all([
-        getStudents(),
-        getDismissalSettings(),
-        getActivities(),
-        getAnnouncements(),
-        getFees(),
-        getPayments(),
-        getLeaveRequests()
-      ]);
-      setStudents(stds);
-      setDismissal(dism);
-      setActivities(acts);
-      setAnnouncements(anns);
-      setFees(fList);
-      setPayments(pays);
-      setLeaveRequests(leaves);
-      setSyncState(getFirestoreSyncState());
-    } catch (e) {
-      console.error("Error loading teacher data:", e);
-    }
+  function showToast(msg: string) {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(""), 2500);
   }
 
-  async function loadAttendanceForDate(d: string) {
-    const att = await getAttendance(d);
-    setAttendance(att);
-  }
-
-  // Attendance toggles
-  function toggleAttendance(studentName: string, status: "H" | "S" | "I" | "A") {
+  // 1. Presensi (Langsung Realtime ke Firestore)
+  async function toggleAttendance(studentName: string, status: "H" | "S" | "I" | "A") {
     const updated = { ...attendance };
     if (updated[studentName] === status) {
       delete updated[studentName];
@@ -148,35 +141,43 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
       updated[studentName] = status;
     }
     setAttendance(updated);
-    setDirty(true);
+
+    try {
+      await saveAttendance(currentDate, updated);
+      showToast(`Presensi ${studentName} diperbarui! ⚡`);
+    } catch (e: any) {
+      console.error("Gagal simpan presensi:", e);
+    }
   }
 
-  function setAllPresent() {
+  async function setAllPresent() {
     const updated: AttendanceRecord = {};
     students.forEach((s) => {
       updated[s.name] = "H";
     });
     setAttendance(updated);
-    setDirty(true);
-  }
 
-  // Save changes
-  async function handleSaveAndPublish() {
-    setSavingMessage("Menerbitkan & menyimpan ke cloud...");
     try {
-      await saveAttendance(currentDate, attendance);
-      await saveDismissalSettings(dismissal);
-      setDirty(false);
-      setSavingMessage("Berhasil disimpan & diterbitkan! 🎉");
-      setTimeout(() => setSavingMessage(""), 3000);
-      setSyncState(getFirestoreSyncState());
+      await saveAttendance(currentDate, updated);
+      showToast("Semua siswa ditandai hadir! ✅");
     } catch (e: any) {
-      setSavingMessage("Gagal menyimpan: " + (e?.message || "Coba lagi"));
+      console.error("Gagal simpan presensi:", e);
     }
   }
 
-  // Dismissal special
-  function addSpecialDismissal() {
+  // 2. Jam Pulang (Langsung Realtime ke Firestore)
+  async function handleUpdateRegularTime(dayNum: number, timeVal: string, extraVal?: string) {
+    const updated = {
+      ...dismissal,
+      regular: { ...dismissal.regular, [dayNum]: timeVal },
+      extracurricular: extraVal !== undefined ? { ...dismissal.extracurricular, [dayNum]: extraVal } : dismissal.extracurricular
+    };
+    setDismissal(updated);
+    await saveDismissalSettings(updated);
+    showToast("Jadwal tetap tersimpan!");
+  }
+
+  async function addSpecialDismissal() {
     if (!specTime) return;
     const item = {
       id: "spec-" + Date.now(),
@@ -190,20 +191,22 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
       specials: [item, ...dismissal.specials].slice(0, 20)
     };
     setDismissal(updated);
-    setDirty(true);
     setSpecReason("");
+    await saveDismissalSettings(updated);
+    showToast("Jadwal khusus berhasil ditambahkan!");
   }
 
-  function deleteSpecialDismissal(id: string) {
+  async function deleteSpecialDismissal(id: string) {
     const updated = {
       ...dismissal,
       specials: dismissal.specials.filter((s) => s.id !== id)
     };
     setDismissal(updated);
-    setDirty(true);
+    await saveDismissalSettings(updated);
+    showToast("Jadwal khusus dihapus!");
   }
 
-  // Image compression
+  // 3. Kegiatan & Foto (Kompresi & Realtime)
   function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -243,18 +246,18 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
     };
 
     await addActivity(newAct);
-    setActivities([newAct, ...activities]);
     setActText("");
     setActImage("");
+    showToast("Kegiatan berhasil ditambahkan! 🎨");
   }
 
   async function handleDeleteActivity(id: string) {
     if (!confirm("Hapus catatan kegiatan ini?")) return;
     await deleteActivity(id);
-    setActivities(activities.filter((a) => a.id !== id));
+    showToast("Kegiatan dihapus.");
   }
 
-  // Info
+  // 4. Pengumuman & PR (Realtime)
   async function handleAddAnnouncement() {
     if (!annText.trim()) return;
 
@@ -268,17 +271,17 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
     };
 
     await addAnnouncement(newAnn);
-    setAnnouncements([newAnn, ...announcements]);
     setAnnText("");
+    showToast("Pengumuman berhasil diterbitkan! 📣");
   }
 
   async function handleDeleteAnnouncement(id: string) {
     if (!confirm("Hapus informasi ini?")) return;
     await deleteAnnouncement(id);
-    setAnnouncements(announcements.filter((a) => a.id !== id));
+    showToast("Informasi dihapus.");
   }
 
-  // Fees
+  // 5. Iuran & Kas (Realtime)
   async function handleAddFee() {
     if (!feeTitle.trim() || !feeAmount) return;
 
@@ -291,51 +294,34 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
     };
 
     await addFee(newFee);
-    setFees([newFee, ...fees]);
     setFeeTitle("");
     setFeeAmount("");
+    showToast("Tagihan iuran berhasil dibuat! 💰");
   }
 
   async function handleTogglePayment(studentName: string, feeId: string) {
     const updatedStatus = await togglePayment(studentName, feeId);
-    setPayments((prev) => ({
-      ...prev,
-      [studentName]: {
-        ...(prev[studentName] || {}),
-        [feeId]: updatedStatus
-      }
-    }));
+    showToast(`Status pembayaran ${studentName}: ${updatedStatus ? "Lunas ✅" : "Belum Bayar"}`);
   }
 
   async function handleDeleteFee(feeId: string) {
     if (!confirm("Hapus jenis iuran ini beserta data pembayarannya?")) return;
     await deleteFee(feeId);
-    setFees(fees.filter((f) => f.id !== feeId));
+    showToast("Tagihan iuran dihapus.");
   }
 
-  // Leave approval
+  // 6. Izin Online (Realtime Approval & Presensi Auto-Update)
   async function handleApproveLeave(req: LeaveRequest, applyToAbsen: boolean) {
     await updateLeaveRequestStatus(req.id, "approved", applyToAbsen);
-    setLeaveRequests(
-      leaveRequests.map((l) => (l.id === req.id ? { ...l, status: "approved" } : l))
-    );
-    if (applyToAbsen && req.date === currentDate) {
-      setAttendance((prev) => ({
-        ...prev,
-        [req.studentName]: req.category === "Sakit" ? "S" : "I"
-      }));
-      setDirty(true);
-    }
+    showToast(`Izin ${req.studentName} disetujui & diterapkan ke absensi! ✅`);
   }
 
   async function handleRejectLeave(id: string) {
     await updateLeaveRequestStatus(id, "rejected", false);
-    setLeaveRequests(
-      leaveRequests.map((l) => (l.id === id ? { ...l, status: "rejected" } : l))
-    );
+    showToast("Pengajuan izin ditolak.");
   }
 
-  // Student CRUD
+  // 7. Kelola Siswa (Realtime)
   async function handleSaveNewStudent(e: React.FormEvent) {
     e.preventDefault();
     if (!newStdName.trim()) return;
@@ -354,21 +340,21 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
     };
 
     await saveStudent(newStd);
-    setStudents([...students, newStd]);
     setShowAddStudentModal(false);
     setNewStdName("");
     setNewStdNisn("");
     setNewStdPin("");
     setNewStdParent("");
+    showToast(`Data siswa ${newStd.name} berhasil ditambahkan! 🎒`);
   }
 
   async function handleDeleteStudent(id: string, name: string) {
     if (!confirm(`Hapus siswa ${name}? Data absensi dan tagihan tetap tersimpan di riwayat.`)) return;
     await deleteStudent(id);
-    setStudents(students.filter((s) => s.id !== id));
+    showToast(`Siswa ${name} dihapus.`);
   }
 
-  // Export CSV functions
+  // Ekspor CSV
   async function exportAttendanceCSV() {
     const allAtt = await getAllAttendance();
     const dates = Object.keys(allAtt).sort();
@@ -401,20 +387,7 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
     downloadCSV(`Data_Siswa_Kelas4_${getTodayDateString()}.csv`, csv);
   }
 
-  // Sync to Firebase
-  const [syncStatusText, setSyncStatusText] = useState("");
-  const [isSyncing, setIsSyncing] = useState(false);
-
-  async function handleSyncToFirestore() {
-    setIsSyncing(true);
-    setSyncStatusText("Sedang menyinkronkan data ke Cloud Firestore...");
-    const res = await syncAllToFirebase();
-    setIsSyncing(false);
-    setSyncStatusText(res.message);
-    setSyncState(getFirestoreSyncState());
-  }
-
-  // Stats calculation for current date
+  // Statistik Presensi Tanggal Terpilih
   const counts = { H: 0, S: 0, I: 0, A: 0, N: 0 };
   students.forEach((s) => {
     const st = attendance[s.name];
@@ -426,7 +399,7 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
   });
 
   return (
-    <div className="w pb-24">
+    <div className="w pb-12">
       {/* Header Guru */}
       <Header
         title1="Mode"
@@ -435,7 +408,7 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
         showPills={false}
       />
 
-      {/* Tabs Menu */}
+      {/* Tabs Menu (Hanya 7 Tab Inti) */}
       <div className="tabs mb-2">
         <button className={tab === "absen" ? "on" : ""} onClick={() => setTab("absen")}>
           📋 Absen
@@ -453,13 +426,10 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
           💰 Iuran
         </button>
         <button className={tab === "izin" ? "on" : ""} onClick={() => setTab("izin")}>
-          📝 Izin Online {leaveRequests.filter(l => l.status === "pending").length > 0 && `(${leaveRequests.filter(l => l.status === "pending").length})`}
+          📝 Izin {leaveRequests.filter(l => l.status === "pending").length > 0 && `(${leaveRequests.filter(l => l.status === "pending").length})`}
         </button>
         <button className={tab === "siswa" ? "on" : ""} onClick={() => setTab("siswa")}>
           👥 Siswa
-        </button>
-        <button className={tab === "cloud" ? "on" : ""} onClick={() => setTab("cloud")}>
-          ☁️ Firebase
         </button>
       </div>
 
@@ -550,26 +520,14 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
                   <input
                     type="time"
                     value={dismissal.regular[dayNum] || ""}
-                    onChange={(e) => {
-                      setDismissal({
-                        ...dismissal,
-                        regular: { ...dismissal.regular, [dayNum]: e.target.value }
-                      });
-                      setDirty(true);
-                    }}
+                    onChange={(e) => handleUpdateRegularTime(dayNum, e.target.value)}
                     className="text-sm font-semibold"
                   />
                   <input
                     type="text"
                     placeholder="Ekstrakurikuler (opsional)"
                     value={dismissal.extracurricular[dayNum] || ""}
-                    onChange={(e) => {
-                      setDismissal({
-                        ...dismissal,
-                        extracurricular: { ...dismissal.extracurricular, [dayNum]: e.target.value }
-                      });
-                      setDirty(true);
-                    }}
+                    onChange={(e) => handleUpdateRegularTime(dayNum, dismissal.regular[dayNum] || "", e.target.value)}
                     className="flex-1 text-sm"
                   />
                 </div>
@@ -886,7 +844,7 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
         <div className="c">
           <h2>Pengajuan Izin dari Orang Tua</h2>
           <p className="text-xs text-[#5d7f93] text-center mb-4">
-            Guru dapat meninjau dan menerapkan izin ke absensi hari tersebut.
+            Guru dapat meninjau dan menerapkan izin ke absensi hari tersebut secara langsung.
           </p>
 
           {leaveRequests.length > 0 ? (
@@ -1053,56 +1011,6 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
         </div>
       )}
 
-      {/* 8. TAB FIREBASE */}
-      {tab === "cloud" && (
-        <div className="c">
-          <h2>Status Firebase Cloud Firestore</h2>
-          
-          <div className="space-y-4 text-sm">
-            <div className="bg-white/80 p-3 rounded-2xl border border-black/10">
-              <div className="font-bold text-[#17456b] mb-1">Status Koneksi Database:</div>
-              {syncState.isAvailable ? (
-                <div className="text-[#27a98a] font-bold flex items-center gap-1">
-                  ✅ Terhubung dengan Firebase Cloud Firestore (Project: infokelas-ed434)
-                </div>
-              ) : (
-                <div className="text-[#ee6b6e] font-semibold">
-                  ⚠️ Cloud Firestore belum diaktifkan di Firebase Console atau permission denied.
-                  <div className="text-xs text-[#5d7f93] mt-1">
-                    Detail: {syncState.lastError}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="bg-amber-50 p-3.5 rounded-2xl border border-amber-200 text-amber-900 text-xs leading-relaxed">
-              <strong>💡 Panduan Aktivasi di Firebase Console:</strong>
-              <ol className="list-decimal list-inside mt-1 space-y-1">
-                <li>Buka console.firebase.google.com dan pilih proyek <b>infokelas-ed434</b>.</li>
-                <li>Klik menu <b>Build &gt; Firestore Database</b> di sebelah kiri.</li>
-                <li>Klik <b>Create Database</b> &gt; pilih lokasi (mis. asia-southeast2 / Jakarta) &gt; pilih <b>Start in test mode</b>.</li>
-                <li>Setelah database aktif, klik tombol di bawah untuk menyinkronkan seluruh data kelas!</li>
-              </ol>
-            </div>
-
-            <div className="text-center">
-              <button
-                onClick={handleSyncToFirestore}
-                disabled={isSyncing}
-                className="btn-wonder btn-save text-sm font-bold py-2.5 px-6"
-              >
-                {isSyncing ? "Menyinkronkan..." : "🚀 Sinkronkan / Unggah Seluruh Data ke Firestore"}
-              </button>
-              {syncStatusText && (
-                <div className="mt-2 text-xs font-bold text-[#17456b]">
-                  {syncStatusText}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Tombol Keluar Mode Guru */}
       <div className="flex justify-center my-6">
         <button
@@ -1114,24 +1022,12 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
         </button>
       </div>
 
-      {/* Floating Save & Publish Button */}
-      {dirty && (
-        <div className="sv">
-          <button
-            onClick={handleSaveAndPublish}
-            className="btn-wonder btn-save shadow-lg"
-          >
-            💾 Simpan &amp; Terbitkan Perubahan
-          </button>
-        </div>
-      )}
-
-      {savingMessage && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 bg-[#17456b] text-white py-2 px-5 rounded-2xl shadow-xl z-50 text-sm font-bold">
-          {savingMessage}
+      {/* Notifikasi Toast Realtime */}
+      {toastMessage && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 bg-[#17456b] text-white py-2 px-5 rounded-2xl shadow-xl z-50 text-sm font-bold animate-bounce">
+          {toastMessage}
         </div>
       )}
     </div>
   );
 }
-

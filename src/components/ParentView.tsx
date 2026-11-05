@@ -10,14 +10,15 @@ import {
   getTodayDateString
 } from "@/lib/formatters";
 import {
-  getAttendance,
   getAllAttendance,
-  getDismissalSettings,
-  getActivities,
-  getAnnouncements,
-  getStudentFees,
-  getLeaveRequests,
-  addLeaveRequest
+  addLeaveRequest,
+  subscribeAttendance,
+  subscribeDismissal,
+  subscribeActivities,
+  subscribeAnnouncements,
+  subscribeFees,
+  subscribePayments,
+  subscribeLeaveRequests
 } from "@/lib/dataService";
 import Header from "./Header";
 
@@ -50,25 +51,21 @@ export default function ParentView({ student, onLogout }: ParentViewProps) {
   const currentMonth = today.slice(0, 7);
 
   useEffect(() => {
-    loadData();
-  }, [student.name]);
+    // 1. Realtime Presensi Hari Ini
+    const unsubAtt = subscribeAttendance(today, (rec) => {
+      setTodayAttendance(rec[student.name] || "N");
+    });
 
-  async function loadData() {
-    try {
-      // 1. Kehadiran Hari Ini
-      const att = await getAttendance(today);
-      setTodayAttendance(att[student.name] || "N");
-
-      // 2. Jam Pulang
-      const dSettings = await getDismissalSettings();
+    // 2. Realtime Jam Pulang
+    const unsubDism = subscribeDismissal((dSettings) => {
       const dayOfWeek = new Date(today + "T00:00:00").getDay();
       const extraToday = dSettings.extracurricular[dayOfWeek] || "";
-      const special = (dSettings.specials || []).find(s => s.date === today);
+      const special = (dSettings.specials || []).find((s) => s.date === today);
 
       if (special) {
         setDismissalInfo({
           time: special.time,
-          note: special.type === "lambat" 
+          note: special.type === "lambat"
             ? "⚠️ Pulang lebih lambat" + (special.reason ? ": " + special.reason : "")
             : "⚠️ Pulang lebih awal" + (special.reason ? ": " + special.reason : ""),
           extra: extraToday
@@ -81,21 +78,53 @@ export default function ParentView({ student, onLogout }: ParentViewProps) {
           extra: extraToday
         });
       }
+    });
 
-      // 3. Kegiatan
-      const acts = await getActivities();
-      setActivities(acts.slice(0, 5));
+    // 3. Realtime Kegiatan
+    const unsubActs = subscribeActivities((list) => {
+      setActivities(list.slice(0, 5));
+    });
 
-      // 4. Pengumuman
-      const anns = await getAnnouncements();
-      setAnnouncements(anns);
+    // 4. Realtime Pengumuman
+    const unsubAnns = subscribeAnnouncements((list) => {
+      setAnnouncements(list);
+    });
 
-      // 5. Iuran
-      const feeList = await getStudentFees(student.name);
+    // 5. Realtime Iuran & Pembayaran
+    let latestFees: any[] = [];
+    let latestPayments: Record<string, any> = {};
+
+    function updateStudentFees() {
+      const studentPayments = latestPayments[student.name] || {};
+      const feeList = latestFees
+        .filter((f) => f.target === "*" || f.target === student.name)
+        .map((f) => ({
+          id: f.id,
+          feeId: f.id,
+          title: f.title,
+          amount: f.amount,
+          paid: !!studentPayments[f.id]
+        }));
       setFees(feeList);
+    }
 
-      // 6. Rekap Absen Bulanan
-      const allAtt = await getAllAttendance();
+    const unsubFees = subscribeFees((fList) => {
+      latestFees = fList;
+      updateStudentFees();
+    });
+
+    const unsubPayments = subscribePayments((pMap) => {
+      latestPayments = pMap;
+      updateStudentFees();
+    });
+
+    // 6. Realtime Izin Online
+    const unsubLeaves = subscribeLeaveRequests((list) => {
+      setLeaveRequests(list.filter((l) => l.studentName === student.name));
+    });
+
+    // 7. Rekap Absen Bulanan
+    getAllAttendance().then((allAtt) => {
       const counts = { H: 0, S: 0, I: 0, A: 0 };
       for (const [dStr, rec] of Object.entries(allAtt)) {
         if (dStr.startsWith(currentMonth) && rec[student.name]) {
@@ -112,14 +141,18 @@ export default function ParentView({ student, onLogout }: ParentViewProps) {
         total: tot,
         percent: tot ? Math.round((counts.H / tot) * 100) : 0
       });
+    });
 
-      // 7. Izin Online
-      const leaves = await getLeaveRequests();
-      setLeaveRequests(leaves.filter(l => l.studentName === student.name));
-    } catch (e) {
-      console.error("Error loading parent dashboard data:", e);
-    }
-  }
+    return () => {
+      unsubAtt();
+      unsubDism();
+      unsubActs();
+      unsubAnns();
+      unsubFees();
+      unsubPayments();
+      unsubLeaves();
+    };
+  }, [student.name]);
 
   async function handleSendLeave(e: React.FormEvent) {
     e.preventDefault();
@@ -145,9 +178,6 @@ export default function ParentView({ student, onLogout }: ParentViewProps) {
       await addLeaveRequest(newReq);
       setLeaveNote("");
       setLeaveMessage("Pengajuan izin berhasil dikirim ke guru kelas! 📨");
-      // Reload leaves
-      const leaves = await getLeaveRequests();
-      setLeaveRequests(leaves.filter(l => l.studentName === student.name));
     } catch (err: any) {
       setLeaveMessage("Gagal mengirim pengajuan, silakan coba lagi.");
     } finally {
