@@ -90,11 +90,7 @@ service cloud.firestore {
 
     // Wali Kelas terverifikasi via Firebase Authentication
     function isTeacher() {
-      return isAuthenticated() && (
-        request.auth.token.email == 'amarianadewi@gmail.com' ||
-        ('admin' in request.auth.token && request.auth.token.admin == true) ||
-        ('role' in request.auth.token && request.auth.token.role == 'teacher')
-      );
+      return isAuthenticated() && request.auth.token.email == 'amarianadewi@gmail.com';
     }
 
     function areImmutableFieldsUnchanged(fields) {
@@ -308,7 +304,7 @@ service cloud.firestore {
     // Menolak segala akses membaca & menulis ke koleksi/dokumen lain
     // ===============================================================
     match /{document=**} {
-      allow read, write: false;
+      allow read, write: if false;
     }
   }
 }
