@@ -98,6 +98,14 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
   const [newStdGender, setNewStdGender] = useState<"L" | "P">("L");
   const [newStdParent, setNewStdParent] = useState("");
 
+  // Edit Siswa
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editNisn, setEditNisn] = useState("");
+  const [editPin, setEditPin] = useState("");
+  const [editGender, setEditGender] = useState<"L" | "P">("L");
+  const [editParent, setEditParent] = useState("");
+
   // Setup Realtime Listeners ke Firebase Firestore
   useEffect(() => {
     const unsubStudents = subscribeStudents((list) => setStudents(list));
@@ -352,6 +360,35 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
     if (!confirm(`Hapus siswa ${name}? Data absensi dan tagihan tetap tersimpan di riwayat.`)) return;
     await deleteStudent(id);
     showToast(`Siswa ${name} dihapus.`);
+  }
+
+  function handleStartEdit(s: Student) {
+    setEditingStudent(s);
+    setEditName(s.name);
+    setEditNisn(s.nisn);
+    setEditPin(s.pin);
+    setEditGender(s.gender || "L");
+    setEditParent(s.parentName || "");
+  }
+
+  async function handleSaveEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingStudent || !editName.trim() || !editPin.trim()) return;
+
+    const pHash = await hashPin(editPin.trim());
+    const updated: Student = {
+      ...editingStudent,
+      name: editName.trim(),
+      nisn: editNisn.trim() || "-",
+      pin: editPin.trim(),
+      pinHash: pHash,
+      gender: editGender,
+      parentName: editParent.trim() || "Bapak/Ibu " + editName.trim()
+    };
+
+    await saveStudent(updated);
+    setEditingStudent(null);
+    showToast(`Data dan PIN siswa ${updated.name} berhasil diperbarui! 🎒`);
   }
 
   // Ekspor CSV
@@ -982,6 +1019,88 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
             </form>
           )}
 
+          {/* Form Edit Siswa */}
+          {editingStudent && (
+            <form onSubmit={handleSaveEdit} className="bg-white p-4 rounded-2xl border-2 border-[#27a98a] mb-4 space-y-3 shadow-md">
+              <div className="flex justify-between items-center">
+                <div className="font-bold text-sm text-[#17456b]">✏️ Edit Data &amp; PIN Siswa ({editingStudent.name}):</div>
+                <button
+                  type="button"
+                  onClick={() => setEditingStudent(null)}
+                  className="text-xs text-gray-500 hover:text-gray-800 font-bold"
+                >
+                  ✕ Batal
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[11px] font-bold text-[#17456b] block mb-0.5">Nama Lengkap:</label>
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="text-sm w-full"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-[#17456b] block mb-0.5">NISN:</label>
+                  <input
+                    type="text"
+                    value={editNisn}
+                    onChange={(e) => setEditNisn(e.target.value)}
+                    className="text-sm w-full"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-[#17456b] block mb-0.5">
+                    PIN Orang Tua <span className="text-[#f5a623]">(Bisa diubah bebas)</span>:
+                  </label>
+                  <input
+                    type="text"
+                    value={editPin}
+                    onChange={(e) => setEditPin(e.target.value)}
+                    className="text-sm w-full font-bold tracking-wider"
+                    placeholder="PIN 4 digit"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-[#17456b] block mb-0.5">Jenis Kelamin:</label>
+                  <select
+                    value={editGender}
+                    onChange={(e) => setEditGender(e.target.value as "L" | "P")}
+                    className="text-sm w-full font-semibold"
+                  >
+                    <option value="L">Laki-laki</option>
+                    <option value="P">Perempuan</option>
+                  </select>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="text-[11px] font-bold text-[#17456b] block mb-0.5">Nama Orang Tua/Wali:</label>
+                  <input
+                    type="text"
+                    value={editParent}
+                    onChange={(e) => setEditParent(e.target.value)}
+                    className="text-sm w-full"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setEditingStudent(null)}
+                  className="btn-wonder text-xs bg-gray-200 text-gray-700"
+                >
+                  Batal
+                </button>
+                <button type="submit" className="btn-wonder btn-save text-xs">
+                  💾 Simpan Perubahan
+                </button>
+              </div>
+            </form>
+          )}
+
           <div className="space-y-2">
             {students.map((s, idx) => (
               <div
@@ -997,8 +1116,17 @@ export default function TeacherView({ onLogout }: TeacherViewProps) {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
                   <button
+                    type="button"
+                    onClick={() => handleStartEdit(s)}
+                    className="btn-wonder text-xs py-1 px-2.5 bg-[#ffd45a] text-[#5a3a00]"
+                    title="Edit data atau PIN siswa ini"
+                  >
+                    ✏️ Edit
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => handleDeleteStudent(s.id, s.name)}
                     className="btn-danger text-xs py-1 px-2.5"
                   >
