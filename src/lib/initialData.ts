@@ -96,6 +96,5 @@ export const INITIAL_FEES: FeeItem[] = [
 ];
 
 export const APP_SALT = "kw05";
-export const WALI_KELAS_EMAIL = "amarianadewi@gmail.com";
 
 

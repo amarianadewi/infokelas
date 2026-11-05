@@ -19,9 +19,9 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
-  // Tab Login: "pin" (Wali Murid) vs "guru" (Wali Kelas Firebase Auth)
+  // Tab Login: "pin" (Wali Murid) vs "guru" (Wali Kelas)
   const [loginMode, setLoginMode] = useState<"pin" | "guru">("pin");
-  const [guruEmail, setGuruEmail] = useState("amarianadewi@gmail.com");
+  const [guruEmail, setGuruEmail] = useState("");
   const [guruPassword, setGuruPassword] = useState("");
   const [isLoggingInEmail, setIsLoggingInEmail] = useState(false);
 
@@ -60,10 +60,10 @@ export default function Home() {
       return;
     }
 
-    // Jika mencoba PIN admin lama, arahkan ke Firebase Auth
+    // Jika mencoba PIN admin lama, arahkan ke tab Wali Kelas
     if (trimmed === "470560") {
       if (showErrors) {
-        setErrorMessage("PIN Wali Kelas telah diganti. Silakan masuk melalui tab 'Wali Kelas' dengan akun Firebase Auth.");
+        setErrorMessage("Khusus wali kelas, silakan masuk melalui tab 'Wali Kelas'.");
         setLoginMode("guru");
       }
       return;
@@ -117,7 +117,7 @@ export default function Home() {
       } else if (err.code === "auth/too-many-requests") {
         setErrorMessage("Terlalu banyak percobaan gagal. Silakan tunggu beberapa saat lagi.");
       } else {
-        setErrorMessage(err.message || "Gagal masuk via Firebase Auth.");
+        setErrorMessage(err.message || "Gagal masuk. Periksa kembali email dan password.");
       }
     } finally {
       setIsLoggingInEmail(false);
@@ -182,7 +182,7 @@ export default function Home() {
                     : "text-[#5d7f93] hover:text-[#17456b]"
                 }`}
               >
-                👨‍👩‍👧 Wali Murid (PIN)
+                👨‍👩‍👧 Wali Murid
               </button>
               <button
                 type="button"
@@ -196,16 +196,16 @@ export default function Home() {
                     : "text-[#5d7f93] hover:text-[#17456b]"
                 }`}
               >
-                👩‍🏫 Wali Kelas (Firebase Auth)
+                👩‍🏫 Wali Kelas
               </button>
             </div>
 
-            {/* Form Mode 1: Wali Murid (PIN) */}
+            {/* Form Mode 1: Wali Murid */}
             {loginMode === "pin" ? (
               <div>
-                <h2>Masukkan PIN Siswa</h2>
+                <h2>Masukkan PIN</h2>
                 <p className="text-xs text-[#5d7f93] text-center mb-3">
-                  Masukkan 4 digit PIN yang dibagikan wali kelas untuk melihat informasi harian anak.
+                  Masukkan PIN dari wali kelas untuk melihat informasi harian anak.
                 </p>
 
                 <form onSubmit={handleParentPinSubmit} className="space-y-3">
@@ -214,7 +214,7 @@ export default function Home() {
                       id="pin"
                       type="password"
                       inputMode="numeric"
-                      placeholder="PIN 4 digit"
+                      placeholder="PIN dari wali kelas"
                       value={pinInput}
                       onChange={(e) => setPinInput(e.target.value)}
                       className="flex-1 text-base font-bold tracking-widest text-center"
@@ -231,33 +231,24 @@ export default function Home() {
                     </div>
                   )}
                 </form>
-
-                {/* Petunjuk PIN Murid */}
-                <div className="mt-5 pt-3 border-t border-dashed border-[#ffd45a]/60 text-xs text-[#5d7f93]">
-                  <div className="font-bold text-[#17456b] mb-1">💡 Contoh PIN Wali Murid:</div>
-                  <div className="leading-relaxed">
-                    Arka: <code>5594</code> • Karel: <code>6726</code> • Rashya: <code>4373</code> • Bella: <code>4090</code> • Bilqis: <code>7391</code><br />
-                    Ghita: <code>9637</code> • Nazriel: <code>5004</code> • Nicho: <code>2460</code> • Yusak: <code>4809</code> • Ragil: <code>5389</code>
-                  </div>
-                </div>
               </div>
             ) : (
-              /* Form Mode 2: Wali Kelas (Firebase Auth) */
+              /* Form Mode 2: Wali Kelas */
               <div>
-                <h2>Login Wali Kelas</h2>
+                <h2>Masuk Wali Kelas</h2>
                 <p className="text-xs text-[#5d7f93] text-center mb-3">
-                  Masuk menggunakan akun Firebase Authentication resmi wali kelas.
+                  Silakan masukkan email dan password untuk mengelola data kelas.
                 </p>
 
                 <form onSubmit={handleTeacherEmailLogin} className="space-y-3">
                   <div>
-                    <label className="text-xs font-bold text-[#17456b] block mb-1">Email Wali Kelas:</label>
+                    <label className="text-xs font-bold text-[#17456b] block mb-1">Email:</label>
                     <input
                       type="email"
-                      placeholder="amarianadewi@gmail.com"
+                      placeholder="Email wali kelas"
                       value={guruEmail}
                       onChange={(e) => setGuruEmail(e.target.value)}
-                      className="w-full text-sm font-semibold"
+                      className="w-full text-sm"
                       required
                     />
                   </div>
@@ -266,7 +257,7 @@ export default function Home() {
                     <label className="text-xs font-bold text-[#17456b] block mb-1">Password:</label>
                     <input
                       type="password"
-                      placeholder="Masukkan password"
+                      placeholder="Password"
                       value={guruPassword}
                       onChange={(e) => setGuruPassword(e.target.value)}
                       className="w-full text-sm"
@@ -287,14 +278,10 @@ export default function Home() {
                       className="btn-wonder w-full py-3 text-sm font-bold bg-[#27a98a] text-white"
                       style={{ background: "linear-gradient(#27a98a, #1b8f7a)" }}
                     >
-                      {isLoggingInEmail ? "Memverifikasi ke Firebase..." : "🔐 Masuk sebagai Wali Kelas"}
+                      {isLoggingInEmail ? "Memeriksa..." : "🔐 Masuk sebagai Wali Kelas"}
                     </button>
                   </div>
                 </form>
-
-                <div className="mt-4 pt-3 border-t border-dashed border-[#ffd45a]/60 text-xs text-[#5d7f93] text-center">
-                  Akun terdaftar: <b>amarianadewi@gmail.com</b>
-                </div>
               </div>
             )}
           </div>
