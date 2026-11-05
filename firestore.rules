@@ -1,53 +1,314 @@
 rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// 1. Collection: students
+//    Document ID: {studentId} (e.g., "std-1", "std-10")
+//    Fields:
+//      - id: string (required, 1-50 chars)
+//      - name: string (required, 1-100 chars)
+//      - nisn: string (required, 1-20 chars)
+//      - pin: string (required, 4-10 chars)
+//      - pinHash: string (optional, <= 128 chars)
+//      - gender: string (optional, 'L' | 'P')
+//      - parentName: string (optional, <= 100 chars)
+//      - parentPhone: string (optional, <= 30 chars)
+//
+// 2. Collection: attendance
+//    Document ID: {date} (format: YYYY-MM-DD, e.g., "2026-11-05")
+//    Fields:
+//      - date: string (required, 10 chars, YYYY-MM-DD)
+//      - records: map (required, studentName -> "H" | "S" | "I" | "A")
+//      - updatedAt: string (optional, ISO timestamp <= 40 chars)
+//
+// 3. Collection: leave_requests
+//    Document ID: {requestId} (e.g., "leave-1730811234567")
+//    Fields:
+//      - id: string (required, 1-100 chars)
+//      - studentName: string (required, 1-100 chars)
+//      - date: string (required, 10 chars, YYYY-MM-DD)
+//      - category: string (required, 'Sakit' | 'Izin')
+//      - note: string (required, 1-500 chars)
+//      - createdAt: string (required, ISO timestamp 10-40 chars)
+//      - status: string (required, 'pending' | 'approved' | 'rejected')
+//
+// 4. Collection: announcements
+//    Document ID: {announcementId} (e.g., "ann-1")
+//    Fields:
+//      - id: string (required, 1-100 chars)
+//      - date: string (required, 8-20 chars)
+//      - type: string (required, 'PR' | 'Jadwal' | 'Libur' | 'Info')
+//      - title: string (required, 1-200 chars)
+//      - text: string (required, 1-2000 chars)
+//      - createdAt: string (optional, <= 40 chars)
+//
+// 5. Collection: activities
+//    Document ID: {activityId} (e.g., "act-1")
+//    Fields:
+//      - id: string (required, 1-100 chars)
+//      - date: string (required, 8-20 chars)
+//      - text: string (required, 1-2000 chars)
+//      - title: string (optional, <= 200 chars)
+//      - imageUrl: string (optional, data URI / URL <= 800000 chars)
+//      - createdAt: string (optional, <= 40 chars)
+//
+// 6. Collection: dismissal_settings
+//    Document ID: {settingId} (e.g., "default")
+//    Fields:
+//      - regular: map (required, dayOfWeek -> time string)
+//      - extracurricular: map (required, dayOfWeek -> name string)
+//      - specials: list (required, list of special dismissal maps, size <= 50)
+//
+// 7. Collection: fees
+//    Document ID: {feeId} (e.g., "fee-1")
+//    Fields:
+//      - id: string (required, 1-100 chars)
+//      - title: string (required, 1-200 chars)
+//      - amount: number (required, >= 0 && <= 1,000,000,000)
+//      - target: string (required, '*' or studentName, 1-100 chars)
+//      - createdAt: string (optional, <= 40 chars)
+//
+// 8. Collection: payments
+//    Document ID: {paymentId} (e.g., "all")
+//    Fields:
+//      - map of student payments: studentName -> (feeId -> boolean)
+//
+// ===============================================================
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Students
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Wali Kelas terverifikasi via Firebase Authentication
+    function isTeacher() {
+      return isAuthenticated() && (
+        request.auth.token.email == 'amarianadewi@gmail.com' ||
+        ('admin' in request.auth.token && request.auth.token.admin == true) ||
+        ('role' in request.auth.token && request.auth.token.role == 'teacher')
+      );
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    // 1. Validator Siswa
+    function isValidStudent(data) {
+      return data.keys().hasAll(['id', 'name', 'nisn', 'pin']) &&
+        data.keys().hasOnly(['id', 'name', 'nisn', 'pin', 'pinHash', 'gender', 'parentName', 'parentPhone']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 50 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.nisn is string && data.nisn.size() >= 1 && data.nisn.size() <= 20 &&
+        data.pin is string && data.pin.size() >= 4 && data.pin.size() <= 10 &&
+        (!('pinHash' in data) || (data.pinHash is string && data.pinHash.size() <= 128)) &&
+        (!('gender' in data) || (data.gender is string && (data.gender == 'L' || data.gender == 'P'))) &&
+        (!('parentName' in data) || (data.parentName is string && data.parentName.size() <= 100)) &&
+        (!('parentPhone' in data) || (data.parentPhone is string && data.parentPhone.size() <= 30));
+    }
+
+    // 2. Validator Presensi Harian
+    function isValidAttendance(data) {
+      return data.keys().hasAll(['date', 'records']) &&
+        data.keys().hasOnly(['date', 'records', 'updatedAt']) &&
+        data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.records is map && data.records.size() <= 100 &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 40));
+    }
+
+    // 3. Validator Pengajuan Izin (Leave Request)
+    function isValidLeaveRequest(data) {
+      return data.keys().hasAll(['id', 'studentName', 'date', 'category', 'note', 'createdAt', 'status']) &&
+        data.keys().hasOnly(['id', 'studentName', 'date', 'category', 'note', 'createdAt', 'status']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 100 &&
+        data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 100 &&
+        data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.category is string && (data.category == 'Sakit' || data.category == 'Izin') &&
+        data.note is string && data.note.size() >= 1 && data.note.size() <= 500 &&
+        data.createdAt is string && data.createdAt.size() >= 10 && data.createdAt.size() <= 40 &&
+        data.status is string && data.status in ['pending', 'approved', 'rejected'];
+    }
+
+    // 4. Validator Pengumuman
+    function isValidAnnouncement(data) {
+      return data.keys().hasAll(['id', 'date', 'type', 'title', 'text']) &&
+        data.keys().hasOnly(['id', 'date', 'type', 'title', 'text', 'createdAt']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 100 &&
+        data.date is string && data.date.size() >= 8 && data.date.size() <= 20 &&
+        data.type is string && data.type in ['PR', 'Jadwal', 'Libur', 'Info'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 2000 &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40));
+    }
+
+    // 5. Validator Kegiatan Harian
+    function isValidActivity(data) {
+      return data.keys().hasAll(['id', 'date', 'text']) &&
+        data.keys().hasOnly(['id', 'date', 'title', 'text', 'imageUrl', 'createdAt']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 100 &&
+        data.date is string && data.date.size() >= 8 && data.date.size() <= 20 &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 2000 &&
+        (!('title' in data) || (data.title is string && data.title.size() <= 200)) &&
+        (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 800000)) &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40));
+    }
+
+    // 6. Validator Pengaturan Jam Pulang
+    function isValidDismissalSettings(data) {
+      return data.keys().hasAll(['regular', 'extracurricular', 'specials']) &&
+        data.keys().hasOnly(['regular', 'extracurricular', 'specials']) &&
+        data.regular is map &&
+        data.extracurricular is map &&
+        data.specials is list && data.specials.size() <= 50;
+    }
+
+    // 7. Validator Iuran
+    function isValidFee(data) {
+      return data.keys().hasAll(['id', 'title', 'amount', 'target']) &&
+        data.keys().hasOnly(['id', 'title', 'amount', 'target', 'createdAt']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 100 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.amount is number && data.amount >= 0 && data.amount <= 1000000000 &&
+        data.target is string && data.target.size() >= 1 && data.target.size() <= 100 &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40));
+    }
+
+    // 8. Validator Status Pembayaran
+    function isValidPayments(data) {
+      return data is map && data.size() <= 200;
+    }
+
+    // ===============================================================
+    // Match Rules per Collection
+    // ===============================================================
+
+    // 1. Students (Data Siswa & PIN)
+    // Dibaca oleh publik/orang tua untuk verifikasi PIN & identitas anak
+    // Hanya wali kelas terautentikasi yang dapat menulis
     match /students/{studentId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow create: if isTeacher() &&
+                       isValidStudent(request.resource.data) &&
+                       request.resource.data.id == studentId;
+      allow update: if isTeacher() &&
+                       isValidStudent(request.resource.data) &&
+                       request.resource.data.id == resource.data.id;
+      allow delete: if isTeacher();
     }
-    
-    // Attendance
+
+    // 2. Attendance (Presensi Harian)
+    // Dibaca oleh publik/orang tua untuk memantau kehadiran
+    // Hanya wali kelas terautentikasi yang dapat mengubah presensi
     match /attendance/{date} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow create: if isTeacher() &&
+                       isValidAttendance(request.resource.data) &&
+                       request.resource.data.date == date;
+      allow update: if isTeacher() &&
+                       isValidAttendance(request.resource.data) &&
+                       request.resource.data.date == resource.data.date;
+      allow delete: if isTeacher();
     }
-    
-    // Leave Requests (Izin Online)
+
+    // 3. Leave Requests (Pengajuan Izin Online Siswa)
+    // Orang tua (klien) dapat membuat pengajuan dengan status 'pending'
+    // Dibaca publik/orang tua & wali kelas
+    // Update (setujui/tolak) & Delete hanya oleh wali kelas terautentikasi
     match /leave_requests/{requestId} {
       allow read: if true;
-      allow create: if true;
-      allow update, delete: if request.auth != null;
+      allow create: if isValidLeaveRequest(request.resource.data) &&
+                       request.resource.data.status == 'pending' &&
+                       request.resource.data.id == requestId;
+      allow update: if isTeacher() &&
+                       isValidLeaveRequest(request.resource.data) &&
+                       areImmutableFieldsUnchanged(['id', 'studentName', 'date', 'category', 'createdAt']);
+      allow delete: if isTeacher();
     }
-    
-    // Announcements (PR, Jadwal, Libur, Info)
+
+    // 4. Announcements (Pengumuman PR, Jadwal, Libur, Info)
+    // Dibaca oleh semua pengunjung / orang tua
+    // Dikelola hanya oleh wali kelas
     match /announcements/{announcementId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow create: if isTeacher() &&
+                       isValidAnnouncement(request.resource.data) &&
+                       request.resource.data.id == announcementId;
+      allow update: if isTeacher() &&
+                       isValidAnnouncement(request.resource.data) &&
+                       request.resource.data.id == resource.data.id;
+      allow delete: if isTeacher();
     }
-    
-    // Activities (Kegiatan & Foto)
+
+    // 5. Activities (Dokumentasi & Catatan Kegiatan Harian)
+    // Dibaca oleh publik/orang tua
+    // Dikelola hanya oleh wali kelas
     match /activities/{activityId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow create: if isTeacher() &&
+                       isValidActivity(request.resource.data) &&
+                       request.resource.data.id == activityId;
+      allow update: if isTeacher() &&
+                       isValidActivity(request.resource.data) &&
+                       request.resource.data.id == resource.data.id;
+      allow delete: if isTeacher();
     }
-    
-    // Dismissal Settings (Jam Pulang & Ekstra)
+
+    // 6. Dismissal Settings (Jam Pulang & Kegiatan Ekstrakurikuler)
+    // Dibaca oleh publik/orang tua
+    // Dikelola hanya oleh wali kelas
     match /dismissal_settings/{settingId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow create: if isTeacher() &&
+                       isValidDismissalSettings(request.resource.data);
+      allow update: if isTeacher() &&
+                       isValidDismissalSettings(request.resource.data);
+      allow delete: if isTeacher();
     }
-    
-    // Fees & Payments (Iuran & Status Pembayaran)
+
+    // 7. Fees (Daftar Iuran & Tagihan Kelas)
+    // Dibaca oleh publik/orang tua
+    // Dikelola hanya oleh wali kelas
     match /fees/{feeId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow create: if isTeacher() &&
+                       isValidFee(request.resource.data) &&
+                       request.resource.data.id == feeId;
+      allow update: if isTeacher() &&
+                       isValidFee(request.resource.data) &&
+                       request.resource.data.id == resource.data.id;
+      allow delete: if isTeacher();
     }
+
+    // 8. Payments (Status Pembayaran Iuran Murid)
+    // Dibaca oleh publik/orang tua
+    // Dikelola hanya oleh wali kelas
     match /payments/{paymentId} {
       allow read: if true;
-      allow write: if request.auth != null;
+      allow create: if isTeacher() &&
+                       isValidPayments(request.resource.data);
+      allow update: if isTeacher() &&
+                       isValidPayments(request.resource.data);
+      allow delete: if isTeacher();
+    }
+
+    // ===============================================================
+    // Default Deny
+    // Menolak segala akses membaca & menulis ke koleksi/dokumen lain
+    // ===============================================================
+    match /{document=**} {
+      allow read, write: false;
     }
   }
 }
-
